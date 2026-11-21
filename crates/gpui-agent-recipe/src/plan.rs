@@ -322,9 +322,9 @@ fn fingerprint_plan(name: &str, steps: &[PlannedStep]) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-/// Compact JSON with object keys sorted and `null` members dropped, so
-/// the text does not depend on `serde_json`'s map ordering feature or on
-/// optional op fields that are unset.
+/// Compact JSON with object keys sorted, so the text does not depend on
+/// `serde_json`'s map ordering feature. Unset optional op fields are not
+/// serialized at all; an explicit `null` (e.g. in invoke args) is kept.
 fn write_canonical(value: &serde_json::Value, out: &mut String) {
     use serde_json::Value;
     match value {
@@ -339,7 +339,7 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
             out.push(']');
         }
         Value::Object(map) => {
-            let mut members: Vec<_> = map.iter().filter(|(_, v)| !v.is_null()).collect();
+            let mut members: Vec<_> = map.iter().collect();
             members.sort_by(|a, b| a.0.cmp(b.0));
             out.push('{');
             for (i, (key, member)) in members.into_iter().enumerate() {
@@ -359,6 +359,23 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_json_keeps_explicit_nulls() {
+        let render = |value: serde_json::Value| {
+            let mut out = String::new();
+            write_canonical(&value, &mut out);
+            out
+        };
+        assert_eq!(
+            render(serde_json::json!({"b": {"x": null}, "a": 1})),
+            r#"{"a":1,"b":{"x":null}}"#
+        );
+        assert_ne!(
+            render(serde_json::json!({"payload": {"x": null}})),
+            render(serde_json::json!({"payload": {}}))
+        );
+    }
     use crate::recipe::parse_wants;
     use crate::registry::todo_registry;
 

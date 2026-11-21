@@ -259,8 +259,8 @@ without `needs`.
 
 The fingerprint is `fnv1a64:` followed by 16 lowercase hex digits:
 FNV-1a 64 over the canonical JSON of `{name, steps: [{id, op, needs}]}`
-in execution order, where canonical means compact, object keys sorted,
-and `null` members omitted. It is the same on every platform and
+in execution order, where canonical means compact with object keys sorted
+(unset optional op fields are absent; an explicit `null` is kept). It is the same on every platform and
 toolchain, and changes when the name, a step, a bound value, or the
 order changes. It is a correlation id for receipts and caches, not a
 security digest.
