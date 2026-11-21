@@ -221,10 +221,8 @@
               ]
             },
             "expect_fingerprint": {
-              "type": [
-                "integer",
-                "string"
-              ],
+              "type": "integer",
+              "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
           },
@@ -272,10 +270,8 @@
               ]
             },
             "expect_fingerprint": {
-              "type": [
-                "integer",
-                "string"
-              ],
+              "type": "integer",
+              "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
           },
@@ -318,10 +314,8 @@
               "type": "string"
             },
             "expect_fingerprint": {
-              "type": [
-                "integer",
-                "string"
-              ],
+              "type": "integer",
+              "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
           },
@@ -370,10 +364,8 @@
               ]
             },
             "expect_fingerprint": {
-              "type": [
-                "integer",
-                "string"
-              ],
+              "type": "integer",
+              "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
           },
@@ -804,10 +796,8 @@
               "type": "number"
             },
             "expect_fingerprint": {
-              "type": [
-                "integer",
-                "string"
-              ],
+              "type": "integer",
+              "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
           },
