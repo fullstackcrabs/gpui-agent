@@ -110,9 +110,11 @@ impl RunOptions {
 /// On a wave/id mismatch between the plan and its schedule (a bug,
 /// not reachable via host failures).
 ///
-/// The client best-effort creates `screenshots.dir`; each capture
-/// sends only a filename, so the host writes under its own screenshot
-/// directory and the receipt records the client-side path.
+/// The client best-effort creates `screenshots.dir`. A host that lists
+/// `screenshot_inline` sends the PNG over the wire and the client writes
+/// it there. Any other host is sent only a filename and writes under its
+/// own screenshot directory; the receipt then records the path the host
+/// reports.
 #[expect(
     clippy::too_many_lines,
     reason = "one sequential wave loop; splitting pipeline/sequential paths would duplicate the step accounting"
@@ -129,8 +131,15 @@ pub fn run_plan(
         return Err(RunError::NeedsYes);
     }
 
+    let mut shot_transport = ShotTransport::HostFile;
     if let Some(capture) = screenshots {
         let _ = std::fs::create_dir_all(&capture.dir);
+        if client
+            .features()
+            .is_ok_and(|features| features.iter().any(|f| f == "screenshot_inline"))
+        {
+            shot_transport = ShotTransport::Inline;
+        }
     }
 
     let started = Instant::now();
@@ -239,7 +248,8 @@ pub fn run_plan(
                     let ok = resp.ok;
                     let error = resp.error.clone();
                     let error_code = resp.code().map(str::to_string);
-                    let screenshot = capture_screenshot(client, screenshots, shot_index, step);
+                    let screenshot =
+                        capture_screenshot(client, screenshots, shot_transport, shot_index, step);
                     if let Some(shot) = screenshot.clone() {
                         receipt.screenshots.push(shot);
                     }
@@ -272,7 +282,8 @@ pub fn run_plan(
                     let error_code = failure.error_code;
                     receipt.ok = false;
                     receipt.session_reused = client.has_session();
-                    let screenshot = capture_screenshot(client, screenshots, shot_index, step);
+                    let screenshot =
+                        capture_screenshot(client, screenshots, shot_transport, shot_index, step);
                     if let Some(shot) = screenshot.clone() {
                         receipt.screenshots.push(shot);
                     }
@@ -305,9 +316,19 @@ pub fn run_plan(
     Ok(receipt)
 }
 
+/// How a step PNG reaches `--screenshot-dir`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShotTransport {
+    /// The host sends the bytes; the client writes the file.
+    Inline,
+    /// The host writes the file under its own screenshot directory.
+    HostFile,
+}
+
 fn capture_screenshot(
     client: &mut AgentClient,
     capture: Option<&ScreenshotCapture>,
+    transport: ShotTransport,
     index: u32,
     step: &PlannedStep,
 ) -> Option<ScreenshotReceipt> {
@@ -317,6 +338,18 @@ fn capture_screenshot(
     }
     let path = capture.step_path(index, &step.id);
     let path_str = path.to_string_lossy().into_owned();
+    if transport == ShotTransport::Inline {
+        let written = client
+            .screenshot_bytes(gpui_agent::ScreenshotMode::Viewport, None, None)
+            .and_then(|png| {
+                std::fs::write(&path, png).map_err(|err| format!("write {path_str}: {err}"))
+            });
+        return Some(ScreenshotReceipt {
+            path: path_str,
+            ok: written.is_ok(),
+            error: written.err(),
+        });
+    }
     let wire_name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -330,7 +363,13 @@ fn capture_screenshot(
         inline: false,
     }) {
         Ok(resp) if resp.ok => Some(ScreenshotReceipt {
-            path: path_str,
+            // The host wrote the file, so report where it says it is.
+            path: resp
+                .result
+                .as_ref()
+                .and_then(|result| result.get("path"))
+                .and_then(serde_json::Value::as_str)
+                .map_or(path_str, str::to_string),
             ok: true,
             error: None,
         }),

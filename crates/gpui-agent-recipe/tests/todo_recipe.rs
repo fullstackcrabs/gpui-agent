@@ -621,15 +621,19 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.screenshots.len(), 2);
     assert!(receipt.screenshots.iter().all(|s| s.ok), "{receipt:?}");
-    let host_base = gpui_agent::screenshot_base_dir();
-    let wait_png = host_base.join("001-wait.png");
-    let add_png = host_base.join("002-add.png");
-    assert_eq!(std::fs::read(&wait_png).unwrap(), gpui_agent::TEST_PNG);
-    assert_eq!(std::fs::read(&add_png).unwrap(), gpui_agent::TEST_PNG);
+    // The receipt's path is where the file actually is: in the client's
+    // `--screenshot-dir`, not wherever the host happens to write.
+    assert_eq!(
+        receipt.screenshots[0].path,
+        dir.join("001-wait.png").to_string_lossy()
+    );
+    for shot in &receipt.screenshots {
+        assert_eq!(std::fs::read(&shot.path).unwrap(), gpui_agent::TEST_PNG);
+    }
 
     let flagged_dir = dir.join("flagged");
     let flagged = ScreenshotCapture {
-        dir: flagged_dir,
+        dir: flagged_dir.clone(),
         flagged_only: true,
     };
     let flagged_receipt = run_plan(
@@ -645,11 +649,9 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
         "{flagged_receipt:?}"
     );
     assert_eq!(
-        std::fs::read(host_base.join("002-add.png")).unwrap(),
+        std::fs::read(flagged_dir.join("002-add.png")).unwrap(),
         gpui_agent::TEST_PNG
     );
-    let _ = std::fs::remove_file(host_base.join("001-wait.png"));
-    let _ = std::fs::remove_file(host_base.join("002-add.png"));
     let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }

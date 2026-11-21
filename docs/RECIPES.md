@@ -236,7 +236,10 @@ error envelope, or for a failed step the partial receipt with top-level
 With `--screenshot-dir DIR`, the run asks the host for an app-surface
 PNG after each step (with `--screenshot-flagged`, only steps marked
 `screenshot`). Files are `001-<id>.png`, `002-<id>.png`, … and are
-listed in the receipt. A host that cannot capture (headless, the daemon,
+listed in the receipt. A host that lists the `screenshot_inline` feature
+sends the PNG over the wire and the file is written in `DIR` on the
+client. An older host writes the file itself, under its own screenshot
+directory, and the receipt records the path that host reports. A host that cannot capture (headless, the daemon,
 Linux and Windows desktop) reports `screenshot_unavailable` in the
 receipt and writes no file; the run still succeeds. See
 [RECORDING.md](RECORDING.md).
