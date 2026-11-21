@@ -7,15 +7,12 @@ use gpui_agent::protocol::Op;
 use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
-use crate::receipt::{Receipt, ScreenshotReceipt, StepReceipt};
+use crate::receipt::{RECEIPT_FORMAT_VERSION, Receipt, ScreenshotReceipt, StepReceipt};
 use crate::schema::Effect;
 
 /// Why a plan run stopped before completing.
 #[derive(Debug, Error)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
-)]
+#[non_exhaustive]
 pub enum RunError {
     /// The recipe declares shutdown/exit effects and `yes` was not set.
     #[error("recipe has shutdown/exit effects; pass --yes to run it")]
@@ -27,6 +24,8 @@ pub enum RunError {
         id: String,
         /// Host-returned or transport error text.
         error: String,
+        /// Stable code of the failure ([`gpui_agent::error_code`]).
+        error_code: String,
         /// Receipt so far; a failed pipelined read wave keeps every
         /// reply of that wave, including steps after the failing one.
         receipt: Box<Receipt>,
@@ -57,6 +56,42 @@ impl ScreenshotCapture {
     }
 }
 
+/// How [`run_plan`] executes a plan. Build with [`RunOptions::new`] and
+/// the `with_*` setters; new options arrive as new setters.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct RunOptions {
+    /// Allow plans with exit effects (`shutdown`, a quit keybinding).
+    pub yes: bool,
+    /// Per-step app-surface PNG capture.
+    pub screenshots: Option<ScreenshotCapture>,
+}
+
+impl RunOptions {
+    /// Defaults: exit effects refused, no screenshots.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allow (or refuse) plans with exit effects.
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "the flag mirrors the CLI's --yes"
+    )]
+    pub fn with_yes(mut self, yes: bool) -> Self {
+        self.yes = yes;
+        self
+    }
+
+    /// Capture an app-surface PNG after steps.
+    #[must_use]
+    pub fn with_screenshots(mut self, screenshots: Option<ScreenshotCapture>) -> Self {
+        self.screenshots = screenshots;
+        self
+    }
+}
+
 /// Execute a compiled plan on one reused TCP session.
 ///
 /// Each step is still a normal protocol request (token, version, caps).
@@ -66,21 +101,10 @@ impl ScreenshotCapture {
 /// sequential fail-fast (no later sibling). A failed wave does not start the
 /// next one. The recipe layer never talks to a shell and never skips
 /// `authorize_request`.
+///
 /// # Errors
 /// [`RunError::NeedsYes`] on shutdown/exit effects without `yes`;
 /// [`RunError::Step`] on the first failing request.
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "the --yes flag mirrors the CLI; a config struct would churn the 0.3.0 signature"
-)]
-pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Receipt, RunError> {
-    run_plan_with_screenshots(client, plan, yes, None)
-}
-
-/// [`run_plan`] plus optional per-step app-surface PNGs.
-///
-/// # Errors
-/// [`RunError`] as in [`run_plan`].
 ///
 /// # Panics
 /// On a wave/id mismatch between the plan and its schedule (a bug,
@@ -90,22 +114,18 @@ pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Rece
 /// sends only a filename, so the host writes under its own screenshot
 /// directory and the receipt records the client-side path.
 #[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "the --yes flag mirrors the CLI"
-)]
-#[expect(
     clippy::too_many_lines,
     reason = "one sequential wave loop; splitting pipeline/sequential paths would duplicate the step accounting"
 )]
 /// Screenshot unavailability is recorded on the receipt and does **not**
 /// fail the recipe. No fake PNG is written.
-pub fn run_plan_with_screenshots(
+pub fn run_plan(
     client: &mut AgentClient,
     plan: &Plan,
-    yes: bool,
-    screenshots: Option<&ScreenshotCapture>,
+    options: &RunOptions,
 ) -> Result<Receipt, RunError> {
-    if plan.requires_yes && !yes {
+    let screenshots = options.screenshots.as_ref();
+    if plan.requires_yes && !options.yes {
         return Err(RunError::NeedsYes);
     }
 
@@ -115,6 +135,7 @@ pub fn run_plan_with_screenshots(
 
     let started = Instant::now();
     let mut receipt = Receipt {
+        v: RECEIPT_FORMAT_VERSION,
         ok: true,
         recipe: plan.name.clone(),
         fingerprint: plan.fingerprint.clone(),
@@ -143,7 +164,7 @@ pub fn run_plan_with_screenshots(
                     receipt.session_reused = client.has_session();
                     let elapsed =
                         u64::try_from(step_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    let mut failed: Option<(String, String)> = None;
+                    let mut failed: Option<(String, String, String)> = None;
                     for (step, resp) in wave_steps.iter().zip(resps) {
                         let ok = resp.ok;
                         let error = resp.error.clone();
@@ -152,6 +173,9 @@ pub fn run_plan_with_screenshots(
                             failed = Some((
                                 step.id.clone(),
                                 error.clone().unwrap_or_else(|| "request failed".into()),
+                                error_code
+                                    .clone()
+                                    .unwrap_or_else(|| gpui_agent::error_code::HOST_ERROR.into()),
                             ));
                         }
                         receipt.steps.push(StepReceipt {
@@ -166,13 +190,14 @@ pub fn run_plan_with_screenshots(
                             screenshot: None,
                         });
                     }
-                    if let Some((id, error)) = failed {
+                    if let Some((id, error, error_code)) = failed {
                         receipt.ok = false;
                         receipt.elapsed_ms =
                             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                         return Err(RunError::Step {
                             id,
                             error,
+                            error_code,
                             receipt: Box::new(receipt),
                         });
                     }
@@ -196,6 +221,7 @@ pub fn run_plan_with_screenshots(
                         u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     return Err(RunError::Step {
                         id: first.id.clone(),
+                        error_code: error_code_of(&error).to_string(),
                         error,
                         receipt: Box::new(receipt),
                     });
@@ -221,7 +247,7 @@ pub fn run_plan_with_screenshots(
                         id: step.id.clone(),
                         ok,
                         error: error.clone(),
-                        error_code,
+                        error_code: error_code.clone(),
                         delivery_status: resp.delivery_status,
                         elapsed_ms: u64::try_from(step_started.elapsed().as_millis())
                             .unwrap_or(u64::MAX),
@@ -235,12 +261,15 @@ pub fn run_plan_with_screenshots(
                         return Err(RunError::Step {
                             id: step.id.clone(),
                             error: error.unwrap_or_else(|| "request failed".into()),
+                            error_code: error_code
+                                .unwrap_or_else(|| gpui_agent::error_code::HOST_ERROR.into()),
                             receipt: Box::new(receipt),
                         });
                     }
                 }
                 Err(failure) => {
                     let error = failure.error;
+                    let error_code = failure.error_code;
                     receipt.ok = false;
                     receipt.session_reused = client.has_session();
                     let screenshot = capture_screenshot(client, screenshots, shot_index, step);
@@ -251,7 +280,7 @@ pub fn run_plan_with_screenshots(
                         id: step.id.clone(),
                         ok: false,
                         error: Some(error.clone()),
-                        error_code: Some(failure.error_code),
+                        error_code: Some(error_code.clone()),
                         delivery_status: failure.delivery_status,
                         elapsed_ms: u64::try_from(step_started.elapsed().as_millis())
                             .unwrap_or(u64::MAX),
@@ -263,6 +292,7 @@ pub fn run_plan_with_screenshots(
                     return Err(RunError::Step {
                         id: step.id.clone(),
                         error,
+                        error_code,
                         receipt: Box::new(receipt),
                     });
                 }

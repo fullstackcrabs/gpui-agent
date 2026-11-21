@@ -120,8 +120,8 @@ struct Cli {
 const AFTER_HELP: &str = "\
 App-specific helpers (for example the sample todo app) live in examples/,
 not in this CLI. Navigate pages with click + assert on stable ids, or invoke
-a command the host registered. Experimental: batch many ops in one process
-with `recipe validate|plan|run|resolve` (JSON canonical; `.wants` also
+a command the host registered. Batch many ops in one process
+with `recipe validate|plan|run` (JSON canonical; `.wants` also
 accepted — see docs/RECIPES.md). Host bind is default-deny: set
 GPUI_AGENT_TOKEN on the host. `recipe run` and `mcp` require a non-empty
 GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
@@ -483,7 +483,7 @@ enum Command {
         #[arg(long = "schema", value_name = "PATH")]
         schema: Vec<std::path::PathBuf>,
     },
-    /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
+    /// Validate / plan / run a JSON recipe of protocol ops (`.wants` also accepted); `resolve` is experimental. `run` requires a token.
     Recipe {
         /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
         #[arg(long = "schema", value_name = "PATH", global = true)]
@@ -527,10 +527,17 @@ fn main() -> ExitCode {
         Err(err) => {
             // A failed request also prints its envelope on stdout, so a
             // caller parsing JSON gets the code and delivery status.
-            if let Some(failure) = err.downcast_ref::<CallFailure>() {
+            let envelope = err
+                .downcast_ref::<CallFailure>()
+                .map(CallFailure::envelope)
+                .or_else(|| {
+                    err.downcast_ref::<gpui_agent_recipe::RecipeError>()
+                        .map(gpui_agent_recipe::RecipeError::envelope)
+                });
+            if let Some(envelope) = envelope {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&failure.envelope()).expect("envelope serializes")
+                    serde_json::to_string_pretty(&envelope).expect("envelope serializes")
                 );
             }
             eprintln!("error: {err}");
@@ -1583,8 +1590,8 @@ mod tests {
             "help should not list a todo subcommand:\n{help}"
         );
         assert!(
-            help.to_ascii_lowercase().contains("experimental"),
-            "top-level help should label recipes experimental:\n{help}"
+            help.contains("recipe validate|plan|run"),
+            "top-level help should point at recipes:\n{help}"
         );
     }
 
@@ -1602,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn recipe_help_is_experimental_and_json_first() {
+    fn recipe_help_is_stable_and_json_first() {
         let mut recipe = Cli::command()
             .find_subcommand("recipe")
             .expect("recipe")
@@ -1611,10 +1618,6 @@ mod tests {
             .get_about()
             .map(std::string::ToString::to_string)
             .unwrap_or_default();
-        assert!(
-            about.to_ascii_lowercase().contains("experimental"),
-            "recipe about should say experimental: {about}"
-        );
         assert!(
             about.to_ascii_lowercase().contains("json"),
             "recipe about should mention JSON: {about}"
@@ -1630,10 +1633,19 @@ mod tests {
             .map(std::string::ToString::to_string)
             .unwrap_or_default();
         assert!(
-            about.to_ascii_lowercase().contains("experimental"),
+            !about.to_ascii_lowercase().contains("experimental"),
             "{about}"
         );
         assert!(about.to_ascii_lowercase().contains("json"), "{about}");
+        let resolve = recipe.find_subcommand("resolve").expect("resolve");
+        let about = resolve
+            .get_about()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            about.to_ascii_lowercase().contains("experimental"),
+            "{about}"
+        );
     }
 
     #[test]

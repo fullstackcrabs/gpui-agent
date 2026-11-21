@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{RecipeError, RecipeErrorCode, err};
+
 /// TMP-shaped operation contract: effects, required inputs, result hint.
 ///
 /// This is a local mapping schema, not a `tmp-core` dependency. Unknown
@@ -41,10 +43,7 @@ pub struct OpSchema {
 /// How a schema name maps onto the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
-)]
+#[non_exhaustive]
 pub enum SchemaKind {
     /// A first-class protocol op (`click`, `snapshot`, …).
     Protocol,
@@ -57,10 +56,7 @@ pub enum SchemaKind {
 /// A schema's declared side effects (fail closed: unknown = Write).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
-)]
+#[non_exhaustive]
 pub enum Effect {
     /// Observation only.
     Read,
@@ -88,19 +84,22 @@ impl OpSchema {
     /// [`Registry::merge`](crate::registry::Registry::merge) rejects.
     ///
     /// # Errors
-    /// A message naming the broken invariant.
-    pub fn validate(&self) -> Result<(), String> {
+    /// [`RecipeErrorCode::InvalidSchema`] naming the broken invariant.
+    pub fn validate(&self) -> Result<(), RecipeError> {
         if self.name.trim().is_empty() {
-            return Err("schema name cannot be empty".into());
+            return Err(err(
+                RecipeErrorCode::InvalidSchema,
+                "schema name cannot be empty",
+            ));
         }
         if self
             .name
             .chars()
             .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
         {
-            return Err(format!(
-                "schema name `{}` must be alphanumeric plus _-. ",
-                self.name
+            return Err(err(
+                RecipeErrorCode::InvalidSchema,
+                format!("schema name `{}` must be alphanumeric plus _-. ", self.name),
             ));
         }
         for req in &self.required {
@@ -110,9 +109,12 @@ impl OpSchema {
                     "target" | "text" | "value" | "key" | "name" | "binding" | "scope"
                 )
             {
-                return Err(format!(
-                    "schema `{}` lists required `{req}` with no args entry",
-                    self.name
+                return Err(err(
+                    RecipeErrorCode::InvalidSchema,
+                    format!(
+                        "schema `{}` lists required `{req}` with no args entry",
+                        self.name
+                    ),
                 ));
             }
         }
@@ -172,7 +174,7 @@ mod tests {
             result: None,
             keywords: vec![],
         };
-        let err = schema.validate().unwrap_err();
+        let err = schema.validate().unwrap_err().to_string();
         assert!(err.contains("payload"), "{err}");
     }
 }
