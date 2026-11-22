@@ -135,7 +135,7 @@ A `params` entry is a bare name (a required string) or an object:
 | `required` | Default `true`, or `false` when `default` is set. `true` with a `default` is rejected |
 | `default` | Used when the caller gives no value; must itself pass the checks |
 | `enum` | Non-empty list; the value must equal one entry |
-| `pattern` | Regular expression that must match somewhere in the value; anchor with `^…$` |
+| `pattern` | `string` params only. Regular expression that must match somewhere in the value; anchor with `^…$` |
 | `description` | Free text for people and form builders |
 
 - A value that fails `type`, `enum`, or `pattern` fails `plan` / `run`

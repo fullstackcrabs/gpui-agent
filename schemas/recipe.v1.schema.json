@@ -69,7 +69,7 @@
               },
               "pattern": {
                 "type": "string",
-                "description": "Regular expression the value must match."
+                "description": "Regular expression the value must match. String params only."
               },
               "description": {
                 "type": "string"

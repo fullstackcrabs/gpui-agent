@@ -154,6 +154,12 @@ impl Param {
             ));
         }
         if let Some(pattern) = &self.pattern {
+            if self.ty != ParamType::String {
+                problems.push(format!(
+                    "param `{name}`: pattern is for string params, not {}",
+                    self.ty.as_str()
+                ));
+            }
             if let Err(e) = regex_lite::Regex::new(pattern) {
                 problems.push(format!("param `{name}`: invalid pattern: {e}"));
                 return problems;
@@ -281,6 +287,17 @@ fn typed(ty: ParamType, text: &str) -> Value {
     .unwrap_or_else(|| json!(text))
 }
 
+/// [`typed`], but only when the typed value reads back as the same text:
+/// `enum` and `default` are compared as text, so `1e2` must not become `100.0`.
+fn exact(ty: ParamType, text: &str) -> Value {
+    let value = typed(ty, text);
+    if scalar_text(&value).as_deref() == Some(text) {
+        value
+    } else {
+        json!(text)
+    }
+}
+
 impl Serialize for Param {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.is_plain() {
@@ -295,12 +312,12 @@ impl Serialize for Param {
             out.insert("required".into(), json!(required));
         }
         if let Some(default) = &self.default {
-            out.insert("default".into(), typed(self.ty, default));
+            out.insert("default".into(), exact(self.ty, default));
         }
         if !self.allowed.is_empty() {
             out.insert(
                 "enum".into(),
-                Value::Array(self.allowed.iter().map(|v| typed(self.ty, v)).collect()),
+                Value::Array(self.allowed.iter().map(|v| exact(self.ty, v)).collect()),
             );
         }
         if let Some(pattern) = &self.pattern {

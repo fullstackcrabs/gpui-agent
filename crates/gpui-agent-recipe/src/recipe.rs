@@ -2421,6 +2421,12 @@ assert todo-item-1 name=$title checked=false
             serde_json::json!("title"),
             "a plain param stays a bare name"
         );
+        let odd: Param = serde_json::from_value(serde_json::json!(
+            {"name": "n", "type": "number", "default": "1e2", "enum": ["1e2", 5]}
+        ))
+        .unwrap();
+        let odd_again: Param = serde_json::from_value(serde_json::to_value(&odd).unwrap()).unwrap();
+        assert_eq!(odd_again, odd, "numeric text survives a round trip");
         let schema = recipe.input_schema();
         assert_eq!(schema["required"], serde_json::json!(["title", "kind"]));
         assert_eq!(
@@ -2461,6 +2467,11 @@ assert todo-item-1 name=$title checked=false
                 serde_json::json!([{"name": "title", "pattern": "("}]),
                 serde_json::json!({"title": "$title"}),
                 "invalid pattern",
+            ),
+            (
+                serde_json::json!([{"name": "title", "type": "integer", "pattern": "^[1-9]$"}]),
+                serde_json::json!({"title": "$title"}),
+                "pattern is for string params",
             ),
             (
                 serde_json::json!([{"name": "title", "required": false}]),
