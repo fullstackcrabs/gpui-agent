@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{RecipeError, RecipeErrorCode, err};
+use crate::param::Param;
 use crate::registry::Registry;
 use crate::schema::{OpSchema, SchemaKind};
 
@@ -37,9 +38,9 @@ pub struct Recipe {
     /// Optional app the recipe targets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
-    /// `$param` names bound by `--set`.
+    /// `$param`s bound by `--set`: bare names or typed entries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     /// Steps in file order.
     pub steps: Vec<RecipeStep>,
 }
@@ -108,6 +109,44 @@ impl Recipe {
             }
         }
         Ok(recipe)
+    }
+
+    /// The declared param named `name`.
+    pub fn param(&self, name: &str) -> Option<&Param> {
+        self.params.iter().find(|param| param.name == name)
+    }
+
+    /// Declared param names, in file order.
+    pub fn param_names(&self) -> Vec<&str> {
+        self.params
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect()
+    }
+
+    /// JSON Schema (2020-12) object for this recipe's inputs: one
+    /// property per param, with `required` listing the params a caller
+    /// must supply.
+    pub fn input_schema(&self) -> Value {
+        let properties: serde_json::Map<String, Value> = self
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), param.json_schema()))
+            .collect();
+        let required: Vec<&str> = self
+            .params
+            .iter()
+            .filter(|param| param.is_required())
+            .map(|param| param.name.as_str())
+            .collect();
+        serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": self.name,
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false,
+        })
     }
 
     /// True when any step declares `needs` — disables the implicit
@@ -234,40 +273,60 @@ pub fn parse_wants(text: &str, name: &str) -> Result<Recipe, RecipeError> {
         v: RECIPE_FORMAT_VERSION,
         name: name.into(),
         app: None,
-        params: params.into_iter().collect(),
+        params: params.into_iter().map(Param::named).collect(),
         steps,
     })
 }
 
 /// Substitute bound values into step op payloads (targets, args,
 /// assert names). Step `id`/`needs` are graph identity, never `$param`s.
-/// `$$` becomes a literal `$`.
+/// `$$` becomes a literal `$`. A param with a `default` takes it when
+/// `set` has no value; an optional param with neither is absent, and
+/// every invoke arg written as exactly that placeholder is omitted.
 ///
 /// # Errors
-/// [`RecipeErrorCode::MissingParam`] naming the first param missing from
-/// `set`; [`RecipeErrorCode::UnknownParam`] naming the first `set` key
-/// the recipe does not declare.
+/// [`RecipeErrorCode::UnknownParam`] naming the first `set` key the
+/// recipe does not declare; [`RecipeErrorCode::InvalidParamValue`] for a
+/// value its param's type, `enum` or `pattern` rejects;
+/// [`RecipeErrorCode::MissingParam`] naming the first required param
+/// missing from `set`.
 pub fn apply_params(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
 ) -> Result<Recipe, RecipeError> {
-    for name in &recipe.params {
-        if !set.contains_key(name) {
-            return Err(err(
-                RecipeErrorCode::MissingParam,
-                format!("missing --set {name}=…"),
-            ));
-        }
-    }
-    if let Some(name) = set.keys().find(|name| !recipe.params.contains(name)) {
+    if let Some(name) = set.keys().find(|name| recipe.param(name).is_none()) {
         return Err(err(
             RecipeErrorCode::UnknownParam,
             format!("--set {name}=… is not a param of recipe `{}`", recipe.name),
         ));
     }
+    let mut bound = set.clone();
+    let mut absent = BTreeSet::new();
+    for param in &recipe.params {
+        match (set.get(&param.name), &param.default) {
+            (Some(value), _) => param
+                .check(value)
+                .map_err(|message| err(RecipeErrorCode::InvalidParamValue, message))?,
+            (None, Some(default)) => {
+                bound.insert(param.name.clone(), default.clone());
+            }
+            (None, None) if param.is_required() => {
+                return Err(err(
+                    RecipeErrorCode::MissingParam,
+                    format!("missing --set {}=…", param.name),
+                ));
+            }
+            (None, None) => {
+                absent.insert(param.name.as_str());
+            }
+        }
+    }
     let mut out = recipe.clone();
     for step in &mut out.steps {
-        substitute_op_in_place(&mut step.op, set)
+        if let Op::Invoke { args, .. } = &mut step.op {
+            omit_absent(args, &absent);
+        }
+        substitute_op_in_place(&mut step.op, &bound)
             .map_err(|message| err(RecipeErrorCode::MissingParam, message).at_step(&step.id))?;
     }
     Ok(out)
@@ -322,7 +381,8 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
     }
 
     let mut params = BTreeSet::new();
-    for name in &recipe.params {
+    for param in &recipe.params {
+        let name = &param.name;
         if !is_ident(name) {
             errors.push(err(
                 Code::InvalidParam,
@@ -331,7 +391,16 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         } else if !params.insert(name.as_str()) {
             errors.push(err(Code::InvalidParam, format!("duplicate param `{name}`")));
         }
+        for problem in param.lint() {
+            errors.push(err(Code::InvalidParam, problem));
+        }
     }
+    let omittable: BTreeSet<&str> = recipe
+        .params
+        .iter()
+        .filter(|param| param.omits_when_absent())
+        .map(|param| param.name.as_str())
+        .collect();
 
     let mut ids = BTreeSet::new();
     for step in &recipe.steps {
@@ -387,7 +456,7 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         let mut found = BTreeSet::new();
         collect_placeholders_in_op(&step.op, &mut found);
         for name in found {
-            if !recipe.params.contains(&name) {
+            if recipe.param(&name).is_none() {
                 errors.push(
                     err(
                         Code::InvalidParam,
@@ -399,6 +468,25 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
                 );
             }
             used.insert(name);
+        }
+        if !omittable.is_empty() {
+            let mut kept = step.op.clone();
+            if let Op::Invoke { args, .. } = &mut kept {
+                omit_absent(args, &omittable);
+            }
+            let mut left = BTreeSet::new();
+            collect_placeholders_in_op(&kept, &mut left);
+            for name in left.iter().filter(|name| omittable.contains(name.as_str())) {
+                errors.push(
+                    err(
+                        Code::InvalidParam,
+                        format!(
+                            "optional param `{name}` has no default, so it can only be a whole invoke arg value (\"key\": \"${name}\"); give it a default or make it required"
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
         }
 
         if let Op::Keybinding {
@@ -570,6 +658,30 @@ pub(crate) fn coerce_invoke_args(
         bound.insert(name.clone(), value);
     }
     Ok(())
+}
+
+/// Drop every object entry whose value is exactly the placeholder of an
+/// absent param.
+fn omit_absent(value: &mut Value, absent: &BTreeSet<&str>) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, entry| {
+                !entry
+                    .as_str()
+                    .and_then(whole_placeholder)
+                    .is_some_and(|name| absent.contains(name))
+            });
+            for entry in map.values_mut() {
+                omit_absent(entry, absent);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                omit_absent(item, absent);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The param name when `s` is exactly one `$name` / `${name}`.
@@ -1374,7 +1486,7 @@ click todo-add
 assert todo-item-1 name=$title checked=false
 ";
         let recipe = parse_wants(wants, "crud").unwrap();
-        assert_eq!(recipe.params, vec!["title"]);
+        assert_eq!(recipe.param_names(), vec!["title"]);
         validate_recipe(&recipe, &todo_registry()).unwrap();
         let mut set = BTreeMap::new();
         set.insert("title".into(), "Buy milk".into());
@@ -2230,6 +2342,152 @@ assert todo-item-1 name=$title checked=false
                     "schema lists `{key}` for `{op}` but the parser ignores it"
                 );
             }
+        }
+    }
+    fn typed_recipe() -> Recipe {
+        Recipe::from_value(&serde_json::json!({
+            "name": "typed",
+            "params": [
+                "title",
+                {"name": "count", "type": "integer", "default": 2},
+                {"name": "kind", "enum": ["a", "b"], "description": "Which kind"},
+                {"name": "amount", "pattern": "^[0-9]+\\.00$", "required": false},
+            ],
+            "steps": [{
+                "id": "s1", "op": "invoke", "name": "todo.add",
+                "args": {"title": "$title", "count": "$count", "kind": "$kind", "amount": "$amount"},
+            }],
+        }))
+        .unwrap()
+    }
+
+    fn bind(recipe: &Recipe, pairs: &[(&str, &str)]) -> Result<Recipe, RecipeError> {
+        let set = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        apply_params(recipe, &set)
+    }
+
+    fn invoke_args(recipe: &Recipe) -> Value {
+        match &recipe.steps[0].op {
+            Op::Invoke { args, .. } => args.clone(),
+            other => panic!("not an invoke: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_params_default_omit_and_reject() {
+        let recipe = typed_recipe();
+        let bound = bind(&recipe, &[("title", "t"), ("kind", "a")]).unwrap();
+        assert_eq!(
+            invoke_args(&bound),
+            serde_json::json!({"title": "t", "count": "2", "kind": "a"}),
+            "default applied, absent optional arg omitted"
+        );
+        let full = bind(
+            &recipe,
+            &[("title", "t"), ("kind", "b"), ("amount", "10.00")],
+        )
+        .unwrap();
+        assert_eq!(invoke_args(&full)["amount"], "10.00");
+
+        for (pairs, code) in [
+            (vec![("title", "t")], RecipeErrorCode::MissingParam),
+            (
+                vec![("title", "t"), ("kind", "c")],
+                RecipeErrorCode::InvalidParamValue,
+            ),
+            (
+                vec![("title", "t"), ("kind", "a"), ("count", "x")],
+                RecipeErrorCode::InvalidParamValue,
+            ),
+            (
+                vec![("title", "t"), ("kind", "a"), ("amount", "10.50")],
+                RecipeErrorCode::InvalidParamValue,
+            ),
+        ] {
+            assert_eq!(bind(&recipe, &pairs).unwrap_err().code, code, "{pairs:?}");
+        }
+    }
+
+    #[test]
+    fn typed_params_round_trip_and_input_schema() {
+        let recipe = typed_recipe();
+        let again = Recipe::from_value(&serde_json::to_value(&recipe).unwrap()).unwrap();
+        assert_eq!(again.params, recipe.params);
+        assert_eq!(
+            serde_json::to_value(&recipe.params[0]).unwrap(),
+            serde_json::json!("title"),
+            "a plain param stays a bare name"
+        );
+        let schema = recipe.input_schema();
+        assert_eq!(schema["required"], serde_json::json!(["title", "kind"]));
+        assert_eq!(
+            schema["properties"]["count"],
+            serde_json::json!({"type": "integer", "default": 2})
+        );
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            serde_json::json!(["a", "b"])
+        );
+    }
+
+    #[test]
+    fn typed_param_declarations_are_linted() {
+        let lint = |params: Value, args: Value| {
+            let recipe = Recipe::from_value(&serde_json::json!({
+                "name": "bad", "params": params,
+                "steps": [{"id": "s1", "op": "invoke", "name": "todo.add", "args": args}],
+            }))
+            .unwrap();
+            lint_recipe(&recipe, &crate::registry::todo_registry())
+                .into_iter()
+                .map(|e| (e.code, e.message))
+                .collect::<Vec<_>>()
+        };
+        for (params, args, want) in [
+            (
+                serde_json::json!([{"name": "title", "type": "integer", "default": "x"}]),
+                serde_json::json!({"title": "$title"}),
+                "default of",
+            ),
+            (
+                serde_json::json!([{"name": "title", "required": true, "default": "x"}]),
+                serde_json::json!({"title": "$title"}),
+                "required but has a default",
+            ),
+            (
+                serde_json::json!([{"name": "title", "pattern": "("}]),
+                serde_json::json!({"title": "$title"}),
+                "invalid pattern",
+            ),
+            (
+                serde_json::json!([{"name": "title", "required": false}]),
+                serde_json::json!({"title": "Buy $title"}),
+                "can only be a whole invoke arg value",
+            ),
+        ] {
+            let found = lint(params, args);
+            assert!(
+                found
+                    .iter()
+                    .any(|(code, message)| *code == RecipeErrorCode::InvalidParam
+                        && message.contains(want)),
+                "want `{want}` in {found:?}"
+            );
+        }
+        for bad in [
+            serde_json::json!([{"name": "t", "typo": 1}]),
+            serde_json::json!([{"name": "t", "type": "date"}]),
+            serde_json::json!([7]),
+        ] {
+            let error = Recipe::from_value(&serde_json::json!({
+                "name": "bad", "params": bad,
+                "steps": [{"id": "s1", "op": "hello"}],
+            }))
+            .unwrap_err();
+            assert_eq!(error.code, RecipeErrorCode::Parse);
         }
     }
 }

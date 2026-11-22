@@ -70,7 +70,8 @@ pub(crate) fn run(
                     "ok": true,
                     "name": recipe.name,
                     "steps": recipe.steps.len(),
-                    "params": recipe.params,
+                    "params": recipe.param_names(),
+                    "input_schema": recipe.input_schema(),
                     "explicit_needs": recipe.uses_explicit_needs(),
                 }))?
             );

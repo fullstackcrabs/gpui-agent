@@ -17,6 +17,8 @@
 
 /// Typed errors with stable codes.
 pub mod error;
+/// Recipe params: bare names or typed entries.
+pub mod param;
 /// Recipe → scheduled plan compilation (DAG waves, param binding).
 pub mod plan;
 /// Deterministic `recipe run` receipt types.
@@ -33,6 +35,7 @@ pub mod run;
 pub mod schema;
 
 pub use error::{RecipeError, RecipeErrorCode};
+pub use param::{Param, ParamType};
 pub use plan::{OrderCheck, PLAN_FORMAT_VERSION, Plan, PlannedStep, compile_plan, order_check};
 pub use receipt::{RECEIPT_FORMAT_VERSION, Receipt, ScreenshotReceipt, StepReceipt};
 pub use recipe::{

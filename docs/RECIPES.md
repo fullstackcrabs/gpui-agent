@@ -69,7 +69,7 @@ Top level:
 | `v` | No (default `1`) | Must be `1` |
 | `name` | Yes | Non-empty |
 | `app` | No | Informational; copied to the plan |
-| `params` | No | Unique names matching `[A-Za-z_][A-Za-z0-9_]*`; each must be used by a step |
+| `params` | No | Bare names or [typed entries](#typed-params); names unique, matching `[A-Za-z_][A-Za-z0-9_]*`; each must be used by a step |
 | `steps` | Yes | 1 to 256 steps |
 | `$schema` | No | Editor hint; ignored |
 
@@ -104,7 +104,7 @@ is `.wants`, unless the text starts with `{`. Path `-` reads stdin.
 - A `$` not followed by a name or `{name}` is a literal `$`.
 - Every placeholder must be declared in `params`, and every declared
   param must be used. Both fail `validate` with `recipe_invalid_param`.
-- `plan` and `run` need a value for every declared param
+- `plan` and `run` need a value for every required param
   (`recipe_missing_param`) and reject values for names the recipe does
   not declare (`recipe_unknown_param`). Repeating `--set` for one name is
   an error.
@@ -114,6 +114,45 @@ is `.wants`, unless the text starts with `{`. Path `-` reads stdin.
   `--set id=1` sends `1`, not `"1"`. A value that does not convert fails
   with `recipe_invalid_param_value`.
 - Step `id` and `needs` are graph identity and are never substituted.
+
+### Typed params
+
+A `params` entry is a bare name (a required string) or an object:
+
+```json
+"params": [
+  "title",
+  {"name": "count", "type": "integer", "default": 1},
+  {"name": "kind", "enum": ["task", "note"], "description": "What to add"},
+  {"name": "amount", "pattern": "^[0-9]+\\.00$", "required": false}
+]
+```
+
+| Key | Rule |
+| --- | --- |
+| `name` | Required |
+| `type` | `string` (default), `number`, `integer`, `bool` |
+| `required` | Default `true`, or `false` when `default` is set. `true` with a `default` is rejected |
+| `default` | Used when the caller gives no value; must itself pass the checks |
+| `enum` | Non-empty list; the value must equal one entry |
+| `pattern` | Regular expression that must match somewhere in the value; anchor with `^…$` |
+| `description` | Free text for people and form builders |
+
+- A value that fails `type`, `enum`, or `pattern` fails `plan` / `run`
+  with `recipe_invalid_param_value`. A bad declaration fails `validate`
+  with `recipe_invalid_param`; an unknown key in the object fails with
+  `recipe_parse`.
+- An optional param with no `default` and no value is absent: every
+  `invoke` arg written as exactly its placeholder (`"amount": "$amount"`,
+  at any depth in `args`) is left out. Such a param may not be used
+  anywhere else; `validate` rejects that.
+  If the left-out arg is one the invoke schema requires, `plan` / `run`
+  fail with `recipe_invalid_args`.
+- `type` checks the value. It does not change how the value is sent:
+  see the `invoke` arg conversion above.
+- `recipe validate` prints `input_schema`, a JSON Schema (2020-12) object
+  built from `params`, for callers that collect or check the values
+  before running.
 
 ### Scheduling
 
@@ -214,7 +253,7 @@ Output contract:
 
 | Outcome | Exit | stdout | stderr |
 | --- | --- | --- | --- |
-| `validate` ok | 0 | `{"ok": true, "name", "steps", "params", "explicit_needs"}` | |
+| `validate` ok | 0 | `{"ok": true, "name", "steps", "params" (names), "input_schema", "explicit_needs"}` | |
 | `plan` ok | 0 | Plan JSON (or order-check JSON) | |
 | `run` ok | 0 | Receipt JSON, `ok: true` | |
 | Rejected before running | 1 | Error envelope | `error: <text>` |
@@ -309,13 +348,13 @@ violation rather than the first.
 | `recipe_invalid_step` | validate | Step id empty, duplicated, or containing a `$param` |
 | `recipe_invalid_needs` | validate | `needs` entry unknown, duplicated, self, or containing a `$param` |
 | `recipe_cycle` | validate | `needs` form a cycle |
-| `recipe_invalid_param` | validate, `--set` | Param name invalid, duplicated, unused, or undeclared; `--set` malformed or repeated |
+| `recipe_invalid_param` | validate, `--set` | Param name invalid, duplicated, unused, or undeclared; bad typed-param declaration; `--set` malformed or repeated |
 | `recipe_unknown_invoke` | validate | `invoke` name is not a registered invoke schema |
 | `recipe_invalid_args` | validate, plan | `invoke` args missing, unknown, or of the wrong type |
 | `recipe_unconfirmed` | validate, run | Quit keybinding without `confirm`, or an exit plan without `--yes` |
-| `recipe_missing_param` | plan, run | A declared param has no value |
+| `recipe_missing_param` | plan, run | A required param has no value |
 | `recipe_unknown_param` | plan, run | A value for a param the recipe does not declare |
-| `recipe_invalid_param_value` | plan, run | A value does not convert to the arg's schema type |
+| `recipe_invalid_param_value` | plan, run | A value fails its param's `type`, `enum`, or `pattern`, or does not convert to the arg's schema type |
 | `recipe_invalid_schema` | all | A `--schema` file is invalid or redefines a name |
 | `recipe_unresolved` | resolve | The intent did not map to exactly one op |
 

@@ -21,12 +21,68 @@
     },
     "params": {
       "type": "array",
-      "uniqueItems": true,
       "items": {
-        "type": "string",
-        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "A required string param."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "type": {
+                "enum": [
+                  "string",
+                  "number",
+                  "integer",
+                  "bool",
+                  "boolean"
+                ],
+                "description": "Defaults to string."
+              },
+              "required": {
+                "type": "boolean",
+                "description": "Defaults to true, or false when `default` is set."
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "enum": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                }
+              },
+              "pattern": {
+                "type": "string",
+                "description": "Regular expression the value must match."
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
-      "description": "Names bound by --set. Each must be used as $name or ${name} in a step."
+      "description": "Params bound by --set: bare names or typed entries. Each must be used as $name or ${name} in a step."
     },
     "steps": {
       "type": "array",

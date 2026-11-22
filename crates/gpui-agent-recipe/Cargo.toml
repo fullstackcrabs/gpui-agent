@@ -21,6 +21,7 @@ gpui-agent.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+regex-lite = "0.1"
 
 # Optional: Instinct-backed policy (M2). Pulled only by the `instinct` feature.
 gpui-agent-policy = { workspace = true, optional = true }

@@ -978,7 +978,8 @@ fn recipe_validate(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, Stri
         "ok": true,
         "name": recipe.name,
         "steps": recipe.steps.len(),
-        "params": recipe.params,
+        "params": recipe.param_names(),
+        "input_schema": recipe.input_schema(),
         "explicit_needs": recipe.uses_explicit_needs(),
     }))
 }
